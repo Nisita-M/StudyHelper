@@ -6,12 +6,21 @@ from transformers import pipeline, BartTokenizer, BartForConditionalGeneration
 import pytesseract
 from pytesseract import Output
 from PIL import Image
-from flask import Flask, render_template, request
+from flask import Flask, render_template, request ,redirect , url_for , session 
+from flask_session import Session
+# from flask_session import FileSystemSessionInterface
 import PyPDF2
+from io import BytesIO
+import uuid
+import os
 
-# nltk.download('words')
-# nltk.download('punkt')
-# nltk.download('stopwords')
+nltk.download('words')
+nltk.download('punkt')
+nltk.download('stopwords')
+
+UPLOAD_FOLDER = 'uploads'
+
+
 
 def preprocess_text(text):
     text = re.sub(r'[^\w\s]', '', text)
@@ -52,15 +61,17 @@ qa_pipeline = pipeline("question-answering", model="distilbert-base-cased-distil
 # Specify the Tesseract executable path
 pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
 
+
 app = Flask(__name__)
 
 # nltk.download('words')
 # nltk.download('punkt')
 # nltk.download('stopwords')
+app.secret_key ='supra_me'
 
 def extract_text_from_pdf(pdf_file):
     text = ""
-    pdf_reader = PdfFileReader(pdf_file)
+    pdf_reader = PyPDF2.PdfFileReader(pdf_file)
     for page_number in range(pdf_reader.numPages):
         page = pdf_reader.getPage(page_number)
         text += page.extractText()
@@ -68,73 +79,122 @@ def extract_text_from_pdf(pdf_file):
 
 @app.route('/')
 def index():
-    return render_template('index.html')
+    return render_template('index.ejs')
 
 @app.route('/process_file', methods=['POST'])
 def process_file():
+    session['questions']=[]
+    session['answers']=[]
+    
     # Get the choice of the user (image or pdf)
     file_type = request.form['file_type']
-
+    session['file_type'] = file_type
+    
     if file_type == 'image':
         # Example: Get the uploaded image file
         uploaded_file = request.files['file']
+        name=uploaded_file.filename
+        if uploaded_file.filename == '':
+            return 'No selected file', 400
+        file_id = str(uuid.uuid4())  # Generate a unique ID for the file
+        file_path = os.path.join(UPLOAD_FOLDER, file_id)
+        uploaded_file.save(file_path)
+        session['file_path'] = file_path
+        # print(uploaded_file)
 
-        # Perform OCR on the image
-        with Image.open(uploaded_file) as image:
-            txt = pytesseract.image_to_string(image)
+        
 
-    elif file_type == 'pdf':
+    if file_type == 'pdf':
         # Example: Get the uploaded PDF file
         uploaded_file = request.files['file']
-
+        name=uploaded_file.filename
+        if uploaded_file.filename == '':
+            return 'No selected file', 400
+        file_id = str(uuid.uuid4())  # Generate a unique ID for the file
+        file_path = os.path.join(UPLOAD_FOLDER, file_id)
+        uploaded_file.save(file_path)
+        session['file_path'] = file_path
+        print(name)
+    return redirect(url_for('quest',filename=name))
+       
+@app.route('/quest/<filename>',methods=['GET'])
+def quest(filename):
         # Extract text from the PDF using PyPDF2
-        pdf_reader = PyPDF2.PdfReader(uploaded_file)
+        # print("Meowwww")
 
-        # Get the number of pages in the PDF
-        num_pages =num_pages = len(pdf_reader.pages)
+        return render_template("question.ejs",filename=filename)
+        # uploaded_file
 
-        # Initialize an empty string to store the extracted text
-        txt = ""
+@app.route('/quest/<filename>',methods=['POST'])
+def upload(filename):
+        print("broo")
+        items=session.get('questions')
+        print("Session before appending:", items)
+        print('hello')
+        file_path = session.get('file_path')
 
-        # Iterate through all pages
-        for page_num in range(num_pages):
-            # Get the page
-            page = pdf_reader.pages[page_num]
+        if file_path is None or not os.path.exists(file_path):
+            return "File not found", 400
+        
+        if session.get('file_type') == 'pdf':
+            with open(file_path, 'rb') as file:
+                file_data = file.read()
+            pdf_reader = PyPDF2.PdfReader(BytesIO(file_data))
 
-            # Extract text from the page
-            etext = page.extract_text()
+            # Get the number of pages in the PDF
+            num_pages =num_pages = len(pdf_reader.pages)
 
-            # Append the text to the result string
-            txt+=etext
+            # Initialize an empty string to store the extracted text
+            txt = ""
 
-    sample_text = txt
-    # Preprocess text using the loaded function
-    preprocessed_text = preprocess_text(sample_text)
+            # Iterate through all pages
+            for page_num in range(num_pages):
+                # Get the page
+                page = pdf_reader.pages[page_num]
 
-    # Divide documents into sentences using the loaded function
-    sentences = divide_documents(preprocessed_text)
+                # Extract text from the page
+                etext = page.extract_text()
 
-    # Generate summaries using the loaded function
-    summaries = generate_summaries(sentences)
+                # Append the text to the result string
+                txt+=etext
+        
+        if session.get('file_type') == 'image':
+            # Perform OCR on the image
+            with Image.open(file_path) as image:
+                txt = pytesseract.image_to_string(image)
 
-    # Check if the user wants to view the summary
-    show_summary = request.form.get('show_summary')
+        sample_text = txt
+        if sample_text == '':
+            sample_text = "No answers found"
+        # Preprocess text using the loaded function
+        preprocessed_text = preprocess_text(sample_text)
 
-    if show_summary:
-        # Use the loaded function to generate a readable summary
-        summary = readable_summary(sample_text)
-    else:
-        summary = None
+        # Divide documents into sentences using the loaded function
+        sentences = divide_documents(preprocessed_text)
 
-    # Example: Get the question from the user
-    user_question = request.form['question']
+        # Generate summaries using the loaded function
+        summaries = generate_summaries(sentences)
 
-    # Use the loaded QA pipeline
-    answer = qa_pipeline(question=user_question, context=sample_text)
+        # Check if the user wants to view the summary
+        show_summary = request.form.get('show_summary')
 
-    # Render the result on the webpage
-    return render_template('result.html', question=user_question, answer=answer['answer'], summary=summary)
+        if show_summary:
+            # Use the loaded function to generate a readable summary
+            summary = readable_summary(sample_text)
+        else:
+            summary = None
+
+        # Example: Get the question from the user
+        user_question = request.form['question']
+        session['questions'].append(user_question)
+        session.modified = True
+        print("Session after appending:", session.get('questions'))
+        # Use the loaded QA pipeline
+        answer = qa_pipeline(question=user_question, context=sample_text)
+        session['answers'].append(answer['answer'])
+
+        # Render the result on the webpage
+        return render_template('question.ejs', question=session.get('questions'), answer=session.get('answers'), summary=summary,filename=filename,len=len(session.get('questions')))
 
 if __name__ == '__main__':
     app.run(debug=True)
-
